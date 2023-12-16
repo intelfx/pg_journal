@@ -193,69 +193,62 @@ strprefixcmp(const char *str1, const char *prefix)
  * each StringInfo consumes 1024 bytes by default. A typical user message, 12
  * fields, would then consume 12 kilobytes minimum!
  */
-static void
-append_string(StringInfo str, struct iovec *field, const char *key, const char *value)
-{
-	size_t old_len = str->len;
-
-	appendStringInfoString(str, key);
-	appendStringInfoString(str, value);
-
-	field->iov_len = str->len - old_len;
-}
-
-static void
-append_string3(StringInfo str, struct iovec *field, const char *key,
-               const char *s1, const char *s2, const char *s3)
-{
-	size_t old_len = str->len;
-
-	appendStringInfoString(str, key);
-	appendStringInfoString(str, s1);
-	appendStringInfoString(str, s2);
-	appendStringInfoString(str, s3);
-
-	field->iov_len = str->len - old_len;
-}
-
-static void
-append_fmt(StringInfo str, struct iovec *field, const char *fmt, ...)
-/* This extension allows gcc to check the format string */
-__attribute__((format(PG_PRINTF_ATTRIBUTE, 3, 4)));
-
-/* See backend/lib/stringinfo.c function appendStringInfo */
-static void
-append_fmt(StringInfo str, struct iovec *field, const char *fmt, ...)
-{
-	size_t old_len = str->len;
-	va_list args;
-	bool success;
-
-	/* appendStringInfoVA can fail due to insufficient space */
-	while (1) {
-		va_start(args, fmt);
-		success = appendStringInfoVA(str, fmt, args);
-		va_end(args);
-
-		if (success)
-			break;
-
-		/* Double the buffer size and try again. */
-		enlargeStringInfo(str, str->maxlen);
-	}
-
-	field->iov_len = str->len - old_len;
-}
 
 #define MAX_FIELDS  23 /* NB! Keep this in sync when adding fields! */
+
+struct fieldbuf
+{
+	struct iovec iov[MAX_FIELDS];
+	size_t n;
+};
+
+/* @formatter:off */
+
+#define APPEND_PROLOGUE(buf, fields)											\
+	size_t old_len = (buf)->len;												\
+	if ((fields)->n >= (sizeof((fields)->iov) / sizeof((fields)->iov[0]))) {	\
+		ereport(FATAL,															\
+				(errmsg("pg_journal: too many log fields (%zu >= %zu)",			\
+						(fields)->n,											\
+						sizeof((fields)->iov) / sizeof((fields)->iov[0]))));	\
+	}																			\
+
+#define APPEND_EPILOGUE(buf, fields)											\
+	(fields)->iov[(fields)->n++].iov_len = (buf)->len - old_len;				\
+
+#define appendf(buf, fields, fmt, ...)											\
+	do {																		\
+		APPEND_PROLOGUE(buf, fields)											\
+		appendStringInfo(buf, fmt, ##__VA_ARGS__);								\
+		APPEND_EPILOGUE(buf, fields)											\
+	} while (0)																	\
+
+#define append2(buf, fields, s1, s2)											\
+	do {																		\
+		APPEND_PROLOGUE(buf, fields)											\
+		appendStringInfoString(buf, s1);										\
+		appendStringInfoString(buf, s2);										\
+		APPEND_EPILOGUE(buf, fields)											\
+	} while (0)																	\
+
+#define append4(buf, fields, s1, s2, s3, s4)									\
+	do {																		\
+		APPEND_PROLOGUE(buf, fields)											\
+		appendStringInfoString(buf, s1);										\
+		appendStringInfoString(buf, s2);										\
+		appendStringInfoString(buf, s3);										\
+		appendStringInfoString(buf, s4);										\
+		APPEND_EPILOGUE(buf, fields)											\
+	} while (0)																	\
+
+/* @formatter:on */
 
 static void
 journal_emit_log(ErrorData *edata)
 {
-	struct iovec fields[MAX_FIELDS];
+	struct fieldbuf fields = {};
 	StringInfoData buf;
 	int ret;
-	int n = 0;
 	char *ptr;
 
 	if (!edata->output_to_server)
@@ -266,56 +259,56 @@ journal_emit_log(ErrorData *edata)
 	/* Assign a MESSAGE_ID to log_statement logging */
 	if (edata->hide_stmt && debug_query_string != NULL &&
 	    !strprefixcmp(edata->message, "statement: ")) {
-		append_string(&buf, &fields[n++],
+		append2(&buf, &fields,
 			"MESSAGE_ID=",
 			"a63699368b304b4cb51bce5644736306"
 		);
 	}
 
 	if (edata->message)
-		append_string3(&buf, &fields[n++],
+		append4(&buf, &fields,
 			"MESSAGE=",
 			_(error_severity(edata->elevel)),
 			":  ",
 			edata->message
 		);
 
-	append_fmt(&buf, &fields[n++], "PRIORITY=%d", elevel_to_syslog(edata->elevel));
-	append_fmt(&buf, &fields[n++], "PGLEVEL=%d", edata->elevel);
+	appendf(&buf, &fields, "PRIORITY=%d", elevel_to_syslog(edata->elevel));
+	appendf(&buf, &fields, "PGLEVEL=%d", edata->elevel);
 
 	if (edata->sqlerrcode)
-		append_string(&buf, &fields[n++],
+		append2(&buf, &fields,
 			"SQLSTATE=", unpack_sql_state(edata->sqlerrcode)
 		);
 
 	if (edata->detail_log)
-		append_string(&buf, &fields[n++], "DETAIL=", edata->detail_log);
+		append2(&buf, &fields, "DETAIL=", edata->detail_log);
 	else if (edata->detail)
-		append_string(&buf, &fields[n++], "DETAIL=", edata->detail);
+		append2(&buf, &fields, "DETAIL=", edata->detail);
 
 	if (edata->hint)
-		append_string(&buf, &fields[n++], "HINT=", edata->hint);
+		append2(&buf, &fields, "HINT=", edata->hint);
 
 	if (edata->internalquery)
-		append_string(&buf, &fields[n++], "QUERY=", edata->internalquery);
+		append2(&buf, &fields, "QUERY=", edata->internalquery);
 
 	if (!edata->hide_ctx && edata->context)
-		append_string(&buf, &fields[n++], "CONTEXT=", edata->context);
+		append2(&buf, &fields, "CONTEXT=", edata->context);
 
 	if (!edata->hide_stmt && debug_query_string)
-		append_string(&buf, &fields[n++], "STATEMENT=", debug_query_string);
+		append2(&buf, &fields, "STATEMENT=", debug_query_string);
 
 #if PG_VERSION_NUM >= 90300
 	if (edata->schema_name)
-		append_string(&buf, &fields[n++], "SCHEMA=", edata->schema_name);
+		append2(&buf, &fields, "SCHEMA=", edata->schema_name);
 	if (edata->table_name)
-		append_string(&buf, &fields[n++], "TABLE=", edata->table_name);
+		append2(&buf, &fields, "TABLE=", edata->table_name);
 	if (edata->column_name)
-		append_string(&buf, &fields[n++], "COLUMN=", edata->column_name);
+		append2(&buf, &fields, "COLUMN=", edata->column_name);
 	if (edata->datatype_name)
-		append_string(&buf, &fields[n++], "DATATYPE=", edata->datatype_name);
+		append2(&buf, &fields, "DATATYPE=", edata->datatype_name);
 	if (edata->constraint_name)
-		append_string(&buf, &fields[n++], "CONSTRAINT=", edata->constraint_name);
+		append2(&buf, &fields, "CONSTRAINT=", edata->constraint_name);
 #endif /* PG_VERSION_NUM >= 90300 */
 
 	/*
@@ -325,11 +318,11 @@ journal_emit_log(ErrorData *edata)
 	 */
 #ifdef SD_JOURNAL_SUPPRESS_LOCATION
 	if (edata->filename)
-		append_string(&buf, &fields[n++], "CODE_FILE=", edata->filename);
+		append2(&buf, &fields, "CODE_FILE=", edata->filename);
 	if (edata->lineno > 0)
-		append_fmt(&buf, &fields[n++], "CODE_LINE=%d", edata->lineno);
+		appendf(&buf, &fields, "CODE_LINE=%d", edata->lineno);
 	if (edata->funcname)
-		append_string(&buf, &fields[n++], "CODE_FUNCTION=", edata->funcname);
+		append2(&buf, &fields, "CODE_FUNCTION=", edata->funcname);
 #endif /* SD_JOURNAL_SUPPRESS_LOCATION */
 
 	/*
@@ -339,42 +332,30 @@ journal_emit_log(ErrorData *edata)
 	 */
 	if (MyProcPort) {
 		if (MyProcPort->user_name)
-			append_string(&buf, &fields[n++], "PGUSER=", MyProcPort->user_name);
+			append2(&buf, &fields, "PGUSER=", MyProcPort->user_name);
 
 		if (MyProcPort->database_name)
-			append_string(&buf, &fields[n++], "PGDATABASE=", MyProcPort->database_name);
+			append2(&buf, &fields, "PGDATABASE=", MyProcPort->database_name);
 
 		if (MyProcPort->remote_host && MyProcPort->remote_port &&
 		    MyProcPort->remote_port[0] != '\0')
-			append_string3(&buf, &fields[n++],
+			append4(&buf, &fields,
 				"PGHOST=",
 				MyProcPort->remote_host,
 				":",
 				MyProcPort->remote_port
 			);
 		else if (MyProcPort->remote_host)
-			append_string(&buf, &fields[n++],
+			append2(&buf, &fields,
 				"PGHOST=",
 				MyProcPort->remote_host
 			);
 	}
 
 	if (application_name && application_name[0] != '\0')
-		append_string(&buf, &fields[n++], "PGAPPNAME=", application_name);
+		append2(&buf, &fields, "PGAPPNAME=", application_name);
 
-	append_string(&buf, &fields[n++], "SYSLOG_IDENTIFIER=", syslog_ident);
-
-	if (n > MAX_FIELDS) {
-		/*
-		 * Oops, someone forgot to update MAX_FIELDS definition!
-		 * Report error and die.
-		 */
-		ereport(
-			FATAL,
-			errmsg("pg_journal: too many log fields (%d >= %d)",
-			       n, MAX_FIELDS)
-		);
-	}
+	append2(&buf, &fields, "SYSLOG_IDENTIFIER=", syslog_ident);
 
 	/*
 	 * Done writing fields. Need to extract pointers to individual items, by
@@ -382,12 +363,12 @@ journal_emit_log(ErrorData *edata)
 	 * base address can move due to reallocations.
 	 */
 	ptr = buf.data;
-	for (size_t i = 0; i < n; i++) {
-		fields[i].iov_base = ptr;
-		ptr += fields[i].iov_len;
+	for (size_t i = 0; i < fields.n; i++) {
+		fields.iov[i].iov_base = ptr;
+		ptr += fields.iov[i].iov_len;
 	}
 
-	ret = sd_journal_sendv(fields, n);
+	ret = sd_journal_sendv(fields.iov, (int) fields.n);
 	pfree(buf.data);
 
 	if (ret >= 0) {
@@ -398,8 +379,8 @@ journal_emit_log(ErrorData *edata)
 		if (!reported_failure) {
 			ereport(
 				WARNING,
-				errmsg("pg_journal: could not log message with %d fields: %s",
-				       n, strerror(-ret))
+				errmsg("pg_journal: could not log message with %zu fields: %s",
+				       fields.n, strerror(-ret))
 			);
 			/* Prevent spamming the log on subsequent failures */
 			reported_failure = true;
