@@ -134,11 +134,12 @@ elevel_to_syslog(int elevel)
 		case DEBUG1:
 			return LOG_DEBUG;
 		case LOG:
-		case COMMERROR:
+		case LOG_SERVER_ONLY:
 		case INFO:
 			return LOG_INFO;
 		case NOTICE:
 		case WARNING:
+		case WARNING_CLIENT_ONLY:
 			return LOG_NOTICE;
 		case ERROR:
 			return LOG_WARNING;
