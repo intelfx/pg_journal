@@ -78,9 +78,6 @@ _PG_init(void)
 {
 	MemoryContext oldcontext;
 
-	prev_emit_log_hook = emit_log_hook;
-	emit_log_hook = do_emit_log;
-
 	DefineBoolVariable(
 		"pg_journal.passthrough_server_log",
 		"Duplicate messages to the server log even if journal logging succeeds",
@@ -94,6 +91,9 @@ _PG_init(void)
 	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 	syslog_ident = strdup(GetConfigOption("syslog_ident", false, false));
 	MemoryContextSwitchTo(oldcontext);
+
+	prev_emit_log_hook = emit_log_hook;
+	emit_log_hook = do_emit_log;
 }
 
 void
