@@ -53,22 +53,24 @@ static char *syslog_ident = NULL;
 static void
 DefineBoolVariable(const char *name, const char *short_desc, bool *value_addr)
 {
-	DefineCustomBoolVariable(name,
-			short_desc,
-			NULL,
-			value_addr,
+	DefineCustomBoolVariable(
+		name,
+		short_desc,
+		NULL,
+		value_addr,
 #if PG_VERSION_NUM >= 80400
-			false,				/* bootValue since 8.4 */
-			PGC_SUSET,
-			0,
+		false,                /* bootValue since 8.4 */
+		PGC_SUSET,
+		0,
 #else
-			PGC_USERSET,		/* 8.3 only allows USERSET custom params */
+		PGC_USERSET,		/* 8.3 only allows USERSET custom params */
 #endif
 #if PG_VERSION_NUM >= 90100
-			NULL,				/* check_hook parameter since 9.1 */
+		NULL,                /* check_hook parameter since 9.1 */
 #endif
-			NULL,
-			NULL);
+		NULL,
+		NULL
+	);
 }
 
 void
@@ -79,9 +81,11 @@ _PG_init(void)
 	prev_emit_log_hook = emit_log_hook;
 	emit_log_hook = do_emit_log;
 
-	DefineBoolVariable("pg_journal.passthrough_server_log",
-			"Duplicate messages to the server log even if journal logging succeeds",
-			&passthrough_server_log);
+	DefineBoolVariable(
+		"pg_journal.passthrough_server_log",
+		"Duplicate messages to the server log even if journal logging succeeds",
+		&passthrough_server_log
+	);
 
 	/*
 	 * We don't want to perform this GUC lookup for each log message. Sadly
@@ -113,8 +117,7 @@ do_emit_log(ErrorData *edata)
 		prev_emit_log_hook(edata);
 
 	/* Protect from recursive calls */
-	if (! in_hook)
-	{
+	if (!in_hook) {
 		in_hook = true;
 		journal_emit_log(edata);
 		in_hook = false;
@@ -125,8 +128,7 @@ static int
 elevel_to_syslog(int elevel)
 {
 	/* See utils/error/elog.c function send_message_to_server_log */
-	switch (elevel)
-	{
+	switch (elevel) {
 		case DEBUG5:
 		case DEBUG4:
 		case DEBUG3:
@@ -173,7 +175,7 @@ append_string(StringInfo str, struct iovec *field, const char *key, const char *
 
 static void
 append_string3(StringInfo str, struct iovec *field, const char *key,
-			   const char *s1, const char *s2, const char *s3)
+               const char *s1, const char *s2, const char *s3)
 {
 	size_t old_len = str->len;
 
@@ -214,7 +216,7 @@ append_fmt(StringInfo str, struct iovec *field, const char *fmt, ...)
 	field->iov_len = str->len - old_len;
 }
 
-#define MAX_FIELDS	 23 /* NB! Keep this in sync when adding fields! */
+#define MAX_FIELDS  23 /* NB! Keep this in sync when adding fields! */
 
 static void
 journal_emit_log(ErrorData *edata)
@@ -222,10 +224,10 @@ journal_emit_log(ErrorData *edata)
 	struct iovec fields[MAX_FIELDS];
 	MemoryContext oldcontext;
 	StringInfoData buf;
-	int			ret;
-	int			i;
-	int			n = 0;
-	char	   *ptr;
+	int ret;
+	int i;
+	int n = 0;
+	char *ptr;
 
 	if (!edata->output_to_server)
 		return;
@@ -237,24 +239,28 @@ journal_emit_log(ErrorData *edata)
 
 	/* Assign a MESSAGE_ID to log_statement logging */
 	if (edata->hide_stmt && debug_query_string != NULL &&
-		memcmp(edata->message, "statement: ", 11) == 0)
-	{
-		append_string(&buf, &fields[n++], "MESSAGE_ID=",
-				"a63699368b304b4cb51bce5644736306");
+	    memcmp(edata->message, "statement: ", 11) == 0) {
+		append_string(&buf, &fields[n++],
+			"MESSAGE_ID=",
+			"a63699368b304b4cb51bce5644736306"
+		);
 	}
 
 	if (edata->message)
-		append_string3(&buf, &fields[n++], "MESSAGE=",
-										   _(error_severity(edata->elevel)),
-										   ":  ",
-										   edata->message);
+		append_string3(&buf, &fields[n++],
+			"MESSAGE=",
+			_(error_severity(edata->elevel)),
+			":  ",
+			edata->message
+		);
 
 	append_fmt(&buf, &fields[n++], "PRIORITY=%d", elevel_to_syslog(edata->elevel));
 	append_fmt(&buf, &fields[n++], "PGLEVEL=%d", edata->elevel);
 
 	if (edata->sqlerrcode)
-		append_string(&buf, &fields[n++], "SQLSTATE=",
-										 unpack_sql_state(edata->sqlerrcode));
+		append_string(&buf, &fields[n++],
+			"SQLSTATE=", unpack_sql_state(edata->sqlerrcode)
+		);
 
 	if (edata->detail_log)
 		append_string(&buf, &fields[n++], "DETAIL=", edata->detail_log);
@@ -295,7 +301,7 @@ journal_emit_log(ErrorData *edata)
 	if (edata->filename)
 		append_string(&buf, &fields[n++], "CODE_FILE=", edata->filename);
 	if (edata->lineno > 0)
-		append_fmt(&buf, &fields[n++],    "CODE_LINE=%d", edata->lineno);
+		append_fmt(&buf, &fields[n++], "CODE_LINE=%d", edata->lineno);
 	if (edata->funcname)
 		append_string(&buf, &fields[n++], "CODE_FUNCTION=", edata->funcname);
 #endif /* SD_JOURNAL_SUPPRESS_LOCATION */
@@ -305,8 +311,7 @@ journal_emit_log(ErrorData *edata)
 	 * environment vars:
 	 * http://www.postgresql.org/docs/current/static/libpq-envars.html
 	 */
-	if (MyProcPort)
-	{
+	if (MyProcPort) {
 		if (MyProcPort->user_name)
 			append_string(&buf, &fields[n++], "PGUSER=", MyProcPort->user_name);
 
@@ -314,15 +319,18 @@ journal_emit_log(ErrorData *edata)
 			append_string(&buf, &fields[n++], "PGDATABASE=", MyProcPort->database_name);
 
 		if (MyProcPort->remote_host && MyProcPort->remote_port &&
-			MyProcPort->remote_port[0] != '\0')
-		{
-			append_string3(&buf, &fields[n++], "PGHOST=",
-											   MyProcPort->remote_host,
-											   ":",
-											   MyProcPort->remote_port);
-		}
+		    MyProcPort->remote_port[0] != '\0')
+			append_string3(&buf, &fields[n++],
+				"PGHOST=",
+				MyProcPort->remote_host,
+				":",
+				MyProcPort->remote_port
+			);
 		else if (MyProcPort->remote_host)
-			append_string(&buf, &fields[n++], "PGHOST=", MyProcPort->remote_host);
+			append_string(&buf, &fields[n++],
+				"PGHOST=",
+				MyProcPort->remote_host
+			);
 	}
 
 	if (application_name && application_name[0] != '\0')
@@ -330,15 +338,16 @@ journal_emit_log(ErrorData *edata)
 
 	append_string(&buf, &fields[n++], "SYSLOG_IDENTIFIER=", syslog_ident);
 
-	if (n > MAX_FIELDS)
-	{
+	if (n > MAX_FIELDS) {
 		/*
 		 * Oops, someone forgot to update MAX_FIELDS definition!
 		 * Report error and die.
 		 */
-		ereport(FATAL,
-				(errmsg("pg_journal: too many log fields (%d >= %d)",
-						n, MAX_FIELDS)));
+		ereport(
+			FATAL,
+			errmsg("pg_journal: too many log fields (%d >= %d)",
+			       n, MAX_FIELDS)
+		);
 	}
 
 	/*
@@ -347,27 +356,24 @@ journal_emit_log(ErrorData *edata)
 	 * base address can move due to reallocations.
 	 */
 	ptr = buf.data;
-	for(i = 0; i < n; i++)
-	{
+	for (i = 0; i < n; i++) {
 		fields[i].iov_base = ptr;
 		ptr += fields[i].iov_len;
 	}
 
 	ret = sd_journal_sendv(fields, n);
 
-	if (ret >= 0)
-	{
+	if (ret >= 0) {
 		/* Successfully logged */
-		if (! passthrough_server_log)
+		if (!passthrough_server_log)
 			edata->output_to_server = false;
-	}
-	else
-	{
-		if (! reported_failure)
-		{
-			ereport(WARNING,
-					(errmsg("pg_journal: could not log message with %d fields: %s",
-							n, strerror(-ret))));
+	} else {
+		if (!reported_failure) {
+			ereport(
+				WARNING,
+				errmsg("pg_journal: could not log message with %d fields: %s",
+				       n, strerror(-ret))
+			);
 			/* Prevent spamming the log on subsequent failures */
 			reported_failure = true;
 		}
