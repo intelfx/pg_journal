@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
+import sys
 import enum
 import itertools
-import timeit
 import uuid
 from typing import (
 	Iterable,
@@ -169,9 +169,14 @@ const char *pgj_id128_log_statement = "''' + UUID.LogStatement.value.hex + r'''"
 
 
 def main_timeit():
-	timeit.__fn__ = generate_list
-	timeit.main(["__fn__()"])
+	import timeit
+	return timeit.main([
+		'sys.modules["__main__"].generate_list()'
+	])
 
 
 if __name__ == '__main__':
+	if sys.argv[1:] == ['timeit']:
+		sys.exit(main_timeit())
+
 	main()
