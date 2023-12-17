@@ -76,8 +76,6 @@ DefineBoolVariable(const char *name, const char *short_desc, bool *value_addr)
 void
 _PG_init(void)
 {
-	MemoryContext oldcontext;
-
 	DefineBoolVariable(
 		"pg_journal.passthrough_server_log",
 		"Duplicate messages to the server log even if journal logging succeeds",
@@ -88,9 +86,10 @@ _PG_init(void)
 	 * We don't want to perform this GUC lookup for each log message. Sadly
 	 * there is no nice way to get notified when this changes.
 	 */
-	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-	syslog_ident = strdup(GetConfigOption("syslog_ident", false, false));
-	MemoryContextSwitchTo(oldcontext);
+	syslog_ident = MemoryContextStrdup(
+		TopMemoryContext, GetConfigOption(
+			"syslog_ident", false, false
+		));
 
 	prev_emit_log_hook = emit_log_hook;
 	emit_log_hook = do_emit_log;
