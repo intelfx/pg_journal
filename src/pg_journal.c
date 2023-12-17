@@ -357,6 +357,7 @@ journal_emit_log(ErrorData *edata)
 	}
 
 	ret = sd_journal_sendv(fields, n);
+	pfree(buf.data);
 
 	if (ret >= 0) {
 		/* Successfully logged */
