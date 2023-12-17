@@ -1,6 +1,7 @@
 // vim: set noet sw=4 ts=4 :
 /* We override CODE_FILE= etc fields, don't let systemd add these */
 #define SD_JOURNAL_SUPPRESS_LOCATION 1
+#define DEBUG 1
 
 #include <systemd/sd-journal.h>
 #include <syslog.h>
@@ -12,6 +13,8 @@
 #include "tcop/tcopprot.h"
 #include "utils/elog.h"
 #include "utils/memutils.h"
+#include "storage/ipc.h"
+#include "bytesize/bs_size.h"
 
 #include "pg_journal_ids.h"
 
@@ -35,6 +38,11 @@ PG_MODULE_MAGIC;
 
 void PGDLLEXPORT _PG_init(void);
 void PGDLLEXPORT _PG_fini(void);
+void PG_exit(int code, Datum arg);
+
+static void pgj_init_statistics(void);
+static void pgj_fini_statistics(void);
+static void pgj_report_statistics(void);
 
 static void do_emit_log(ErrorData *edata);
 static void journal_emit_log(ErrorData *edata);
@@ -118,6 +126,9 @@ _PG_init(void)
 			"syslog_ident", false, false
 		));
 
+	pgj_init_statistics();
+	before_shmem_exit(&PG_exit, 0);
+
 	prev_emit_log_hook = emit_log_hook;
 	emit_log_hook = do_emit_log;
 	g_initialized = true;
@@ -129,11 +140,19 @@ _PG_init(void)
 }
 
 void
+PG_exit(int code, Datum arg)
+{
+	pgj_fini_statistics();
+}
+
+void
 _PG_fini(void)
 {
 	if (!g_initialized) {
 		return;
 	}
+
+	pgj_fini_statistics();
 
 	/*
 	 * If not, someone else didn't clean up properly. We can't do anything here.
@@ -289,6 +308,147 @@ struct fieldbuf
 
 /* @formatter:on */
 
+static int g_statistics_enabled = 0;
+static unsigned *g_statistics = NULL;
+static size_t g_statistics_size = 0;
+static const char *g_field_names[] = {
+	"SQLSTATE",
+	"DETAIL",
+	"STATEMENT",
+	"HINT",
+	"CONTEXT",
+	"SCHEMA",
+	"TABLE",
+	"COLUMN",
+	"DATATYPE",
+	"CONSTRAINT",
+	"PGUSER",
+	"PGDATABASE",
+	"PGHOST",
+	"PGAPPNAME",
+	NULL,
+};
+
+static void
+pgj_init_statistics(void)
+{
+	size_t buckets = (1 << MAX_FIELDS);
+	uint64_t sz = sizeof(g_statistics[0]) * buckets;
+	BSSize bsz = bs_size_new_from_bytes(sz, 1);
+	char *sz_str = bs_size_human_readable(bsz, BS_BUNIT_B, -1, false);
+
+	ereport(
+		LOG,
+        errmsg("pg_journal: allocating %s for statistics", sz_str)
+	);
+	free(sz_str);
+	bs_size_free(bsz);
+
+	g_statistics = MemoryContextAllocExtended(TopMemoryContext, sz, MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+	g_statistics_size = buckets;
+	g_statistics_enabled++;
+}
+
+static void
+pgj_report_statistics(void)
+{
+	StringInfoData buf;
+
+	g_statistics_enabled--;
+	initStringInfo(&buf);
+
+	ereport(
+		LOG,
+		errmsg("pg_journal: reporting statistics (TBD)")
+	);
+
+	for (size_t i = 0; i < g_statistics_size; ++i) {
+		if (__glibc_likely(g_statistics[i] == 0)) {
+			continue;
+		}
+
+		for (size_t j = 0; g_field_names[j] != NULL; ++j) {
+			if (i & (1 << j)) {
+				appendStringInfoString(&buf, g_field_names[j]);
+				appendStringInfoString(&buf, ", ");
+			}
+		}
+
+		if (buf.len == 0) {
+			appendStringInfoString(&buf, "<none>");
+		} else {
+			buf.len -= 2; /* remove the trailing ", " */
+		}
+
+		buf.data[buf.len] = '\0';
+
+		ereport(
+			LOG,
+			errmsg("pg_journal: statistics: [%s] = %u messages",
+			       buf.data, g_statistics[i])
+		);
+
+		resetStringInfo(&buf);
+	}
+
+	pfree(buf.data); buf.data = NULL;
+	g_statistics_enabled++;
+}
+
+static void
+pgj_fini_statistics(void)
+{
+	if (g_statistics_enabled <= 0) {
+		return;
+	}
+
+	g_statistics_enabled--;
+	pgj_report_statistics();
+
+	ereport(
+		LOG,
+		errmsg("pg_journal: freeing statistics")
+	);
+	pfree(g_statistics);
+	g_statistics = NULL;
+	g_statistics_size = 0;
+}
+
+static void
+pgj_account(struct fieldbuf *fields)
+{
+	uint32_t field_mask = 0;
+
+	if (__glibc_unlikely(g_statistics_enabled <= 0)) {
+		return;
+	}
+
+	for (size_t i = 0; i < fields->n; ++i) {
+		struct iovec *field = &fields->iov[i];
+
+		for (size_t j = 0; g_field_names[j] != NULL; ++j) {
+			const char *field_name = g_field_names[j];
+			size_t field_name_len = strlen(field_name);
+
+			if ((field->iov_len >= field_name_len + 1)
+			 && !memcmp(field->iov_base, field_name, field_name_len)
+			 && (((char *) field->iov_base)[field_name_len] == '=')) {
+				field_mask |= (1 << j);
+			}
+		}
+	}
+
+	if (field_mask >= g_statistics_size) {
+		ereport(
+			FATAL,
+			errmsg("pg_journal: trying to use statistics bucket %zu (have only %zu)",
+				   (size_t)field_mask,
+				   g_statistics_size)
+	   );
+	}
+	g_statistics[field_mask] += 1;
+}
+
 static void
 journal_emit_log(ErrorData *edata)
 {
@@ -297,6 +457,10 @@ journal_emit_log(ErrorData *edata)
 	int ret;
 	char *ptr;
 	const char *msgid = NULL;
+
+#ifdef DEBUG
+	const char *msgid2 = NULL;
+#endif
 
 	if (!edata->output_to_server)
 		return;
@@ -454,6 +618,7 @@ journal_emit_log(ErrorData *edata)
 	}
 
 	ret = sd_journal_sendv(fields.iov, (int) fields.n);
+	pgj_account(&fields);
 	pfree(buf.data);
 
 	if (ret >= 0) {

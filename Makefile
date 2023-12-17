@@ -6,8 +6,8 @@ MODULE_big   = pg_journal
 PG_CONFIG    = pg_config
 PKG_CONFIG   = pkg-config
 
-PG_CPPFLAGS = $(shell $(PKG_CONFIG) libsystemd --cflags)
-SHLIB_LINK  = $(shell $(PKG_CONFIG) libsystemd --libs)
+PG_CFLAGS = $(shell $(PKG_CONFIG) libsystemd bytesize --cflags)
+SHLIB_LINK = $(shell $(PKG_CONFIG) libsystemd bytesize --libs)
 
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
