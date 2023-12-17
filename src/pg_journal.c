@@ -241,6 +241,14 @@ struct fieldbuf
 		APPEND_EPILOGUE(buf, fields)											\
 	} while (0)																	\
 
+#define appendex(buf, fields, s1, code)											\
+	do {																		\
+		APPEND_PROLOGUE(buf, fields)											\
+		appendStringInfoString(buf, s1);										\
+		code																	\
+		APPEND_EPILOGUE(buf, fields)											\
+	} while (0)																	\
+
 /* @formatter:on */
 
 static void
@@ -265,13 +273,18 @@ journal_emit_log(ErrorData *edata)
 		);
 	}
 
-	if (edata->message)
-		append4(&buf, &fields,
-			"MESSAGE=",
-			_(error_severity(edata->elevel)),
-			":  ",
-			edata->message
-		);
+	appendex(&buf, &fields, "MESSAGE=", {
+		appendStringInfoString(&buf, _(error_severity(edata->elevel)));
+		appendStringInfoString(&buf, ":  ");
+		if (Log_error_verbosity >= PGERROR_VERBOSE) {
+			appendStringInfo(&buf, "%s: ", unpack_sql_state(edata->sqlerrcode));
+		}
+		appendStringInfoString(&buf, edata->message ?: "missing error text");
+		if (edata->cursorpos > 0 || edata->internalpos > 0) {
+			appendStringInfo(&buf, _(" at character %d"),
+			                 Max(edata->cursorpos, edata->internalpos));
+		}
+	});
 
 	appendf(&buf, &fields, "PRIORITY=%d", elevel_to_syslog(edata->elevel));
 	appendf(&buf, &fields, "PGLEVEL=%d", edata->elevel);
