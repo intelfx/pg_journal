@@ -223,7 +223,6 @@ journal_emit_log(ErrorData *edata)
 	struct iovec fields[MAX_FIELDS];
 	StringInfoData buf;
 	int ret;
-	int i;
 	int n = 0;
 	char *ptr;
 
@@ -351,7 +350,7 @@ journal_emit_log(ErrorData *edata)
 	 * base address can move due to reallocations.
 	 */
 	ptr = buf.data;
-	for (i = 0; i < n; i++) {
+	for (size_t i = 0; i < n; i++) {
 		fields[i].iov_base = ptr;
 		ptr += fields[i].iov_len;
 	}
