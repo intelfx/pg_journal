@@ -3,3 +3,6 @@
 *.o
 .deps
 .settings
+
+src/pg_journal_ids.c
+src/pg_journal_ids.catalog

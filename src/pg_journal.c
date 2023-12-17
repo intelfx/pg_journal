@@ -13,6 +13,8 @@
 #include "utils/elog.h"
 #include "utils/memutils.h"
 
+#include "pg_journal_ids.h"
+
 /**** Version detection */
 
 #ifdef __GNUC__
@@ -200,11 +202,12 @@ struct fieldbuf
 {
 	struct iovec iov[MAX_FIELDS];
 	size_t n;
+	uint32_t flags;
 };
 
 /* @formatter:off */
 
-#define APPEND_PROLOGUE(buf, fields)											\
+#define APPEND_PROLOGUE(buf, fields, flag)										\
 	size_t old_len = (buf)->len;												\
 	if ((fields)->n >= (sizeof((fields)->iov) / sizeof((fields)->iov[0]))) {	\
 		ereport(FATAL,															\
@@ -212,28 +215,31 @@ struct fieldbuf
 						(fields)->n,											\
 						sizeof((fields)->iov) / sizeof((fields)->iov[0]))));	\
 	}																			\
+	if (flag != FLAG_NONE) {                            						\
+		(fields)->flags |= (1 << flag);                         				\
+	}                                                                           \
 
 #define APPEND_EPILOGUE(buf, fields)											\
 	(fields)->iov[(fields)->n++].iov_len = (buf)->len - old_len;				\
 
-#define appendf(buf, fields, fmt, ...)											\
+#define appendf(buf, fields, flag, fmt, ...)									\
 	do {																		\
-		APPEND_PROLOGUE(buf, fields)											\
+		APPEND_PROLOGUE(buf, fields, flag)										\
 		appendStringInfo(buf, fmt, ##__VA_ARGS__);								\
 		APPEND_EPILOGUE(buf, fields)											\
 	} while (0)																	\
 
-#define append2(buf, fields, s1, s2)											\
+#define append2(buf, fields, flag, s1, s2)										\
 	do {																		\
-		APPEND_PROLOGUE(buf, fields)											\
+		APPEND_PROLOGUE(buf, fields, flag)										\
 		appendStringInfoString(buf, s1);										\
 		appendStringInfoString(buf, s2);										\
 		APPEND_EPILOGUE(buf, fields)											\
 	} while (0)																	\
 
-#define append4(buf, fields, s1, s2, s3, s4)									\
+#define append4(buf, fields, flag, s1, s2, s3, s4)								\
 	do {																		\
-		APPEND_PROLOGUE(buf, fields)											\
+		APPEND_PROLOGUE(buf, fields, flag)										\
 		appendStringInfoString(buf, s1);										\
 		appendStringInfoString(buf, s2);										\
 		appendStringInfoString(buf, s3);										\
@@ -241,9 +247,9 @@ struct fieldbuf
 		APPEND_EPILOGUE(buf, fields)											\
 	} while (0)																	\
 
-#define appendex(buf, fields, s1, code)											\
+#define appendex(buf, fields, flag, s1, code)									\
 	do {																		\
-		APPEND_PROLOGUE(buf, fields)											\
+		APPEND_PROLOGUE(buf, fields, flag)										\
 		appendStringInfoString(buf, s1);										\
 		code																	\
 		APPEND_EPILOGUE(buf, fields)											\
@@ -258,6 +264,7 @@ journal_emit_log(ErrorData *edata)
 	StringInfoData buf;
 	int ret;
 	char *ptr;
+	const char *msgid = NULL;
 
 	if (!edata->output_to_server)
 		return;
@@ -267,61 +274,63 @@ journal_emit_log(ErrorData *edata)
 	/* Assign a MESSAGE_ID to log_statement logging */
 	if (edata->hide_stmt && debug_query_string != NULL &&
 	    !strprefixcmp(edata->message, "statement: ")) {
-		append2(&buf, &fields,
-			"MESSAGE_ID=",
-			"a63699368b304b4cb51bce5644736306"
-		);
+		msgid = pgj_id128_log_statement;
 	}
 
-	appendex(&buf, &fields, "MESSAGE=", {
+	appendex(&buf, &fields, FLAG_NONE, "MESSAGE=", {
 		appendStringInfoString(&buf, _(error_severity(edata->elevel)));
 		appendStringInfoString(&buf, ":  ");
 		if (Log_error_verbosity >= PGERROR_VERBOSE) {
-			appendStringInfo(&buf, "%s: ", unpack_sql_state(edata->sqlerrcode));
+			appendStringInfo(&buf, "%s: ",
+			                 unpack_sql_state(edata->sqlerrcode));
 		}
-		appendStringInfoString(&buf, edata->message ?: "missing error text");
+		appendStringInfoString(&buf, edata->message ?: "missing text");
 		if (edata->cursorpos > 0 || edata->internalpos > 0) {
 			appendStringInfo(&buf, _(" at character %d"),
 			                 Max(edata->cursorpos, edata->internalpos));
 		}
 	});
 
-	appendf(&buf, &fields, "PRIORITY=%d", elevel_to_syslog(edata->elevel));
-	appendf(&buf, &fields, "PGLEVEL=%d", edata->elevel);
+	appendf(&buf, &fields, FLAG_NONE, "PRIORITY=%d",
+	        elevel_to_syslog(edata->elevel));
+	appendf(&buf, &fields, FLAG_NONE, "PGLEVEL=%d", edata->elevel);
 
 	if (edata->sqlerrcode)
-		append2(&buf, &fields,
+		append2(&buf, &fields, FLAG_NONE,
 			"SQLSTATE=", unpack_sql_state(edata->sqlerrcode)
 		);
 
 	if (edata->detail_log)
-		append2(&buf, &fields, "DETAIL=", edata->detail_log);
+		append2(&buf, &fields, FLAG_DETAIL, "DETAIL=", edata->detail_log);
 	else if (edata->detail)
-		append2(&buf, &fields, "DETAIL=", edata->detail);
+		append2(&buf, &fields, FLAG_DETAIL, "DETAIL=", edata->detail);
 
 	if (edata->hint)
-		append2(&buf, &fields, "HINT=", edata->hint);
+		append2(&buf, &fields, FLAG_HINT, "HINT=", edata->hint);
 
 	if (edata->internalquery)
-		append2(&buf, &fields, "QUERY=", edata->internalquery);
+		append2(&buf, &fields, FLAG_QUERY, "QUERY=", edata->internalquery);
 
 	if (!edata->hide_ctx && edata->context)
-		append2(&buf, &fields, "CONTEXT=", edata->context);
+		append2(&buf, &fields, FLAG_CONTEXT, "CONTEXT=", edata->context);
 
 	if (!edata->hide_stmt && debug_query_string)
-		append2(&buf, &fields, "STATEMENT=", debug_query_string);
+		append2(&buf, &fields, FLAG_STATEMENT, "STATEMENT=",
+		        debug_query_string);
 
 #if PG_VERSION_NUM >= 90300
 	if (edata->schema_name)
-		append2(&buf, &fields, "SCHEMA=", edata->schema_name);
+		append2(&buf, &fields, FLAG_SCHEMA, "SCHEMA=", edata->schema_name);
 	if (edata->table_name)
-		append2(&buf, &fields, "TABLE=", edata->table_name);
+		append2(&buf, &fields, FLAG_TABLE, "TABLE=", edata->table_name);
 	if (edata->column_name)
-		append2(&buf, &fields, "COLUMN=", edata->column_name);
+		append2(&buf, &fields, FLAG_COLUMN, "COLUMN=", edata->column_name);
 	if (edata->datatype_name)
-		append2(&buf, &fields, "DATATYPE=", edata->datatype_name);
+		append2(&buf, &fields, FLAG_DATATYPE, "DATATYPE=",
+		        edata->datatype_name);
 	if (edata->constraint_name)
-		append2(&buf, &fields, "CONSTRAINT=", edata->constraint_name);
+		append2(&buf, &fields, FLAG_CONSTRAINT, "CONSTRAINT=",
+		        edata->constraint_name);
 #endif /* PG_VERSION_NUM >= 90300 */
 
 	/*
@@ -331,11 +340,11 @@ journal_emit_log(ErrorData *edata)
 	 */
 #ifdef SD_JOURNAL_SUPPRESS_LOCATION
 	if (edata->filename)
-		append2(&buf, &fields, "CODE_FILE=", edata->filename);
+		append2(&buf, &fields, FLAG_NONE, "CODE_FILE=", edata->filename);
 	if (edata->lineno > 0)
-		appendf(&buf, &fields, "CODE_LINE=%d", edata->lineno);
+		appendf(&buf, &fields, FLAG_NONE, "CODE_LINE=%d", edata->lineno);
 	if (edata->funcname)
-		append2(&buf, &fields, "CODE_FUNCTION=", edata->funcname);
+		append2(&buf, &fields, FLAG_NONE, "CODE_FUNCTION=", edata->funcname);
 #endif /* SD_JOURNAL_SUPPRESS_LOCATION */
 
 	/*
@@ -345,30 +354,61 @@ journal_emit_log(ErrorData *edata)
 	 */
 	if (MyProcPort) {
 		if (MyProcPort->user_name)
-			append2(&buf, &fields, "PGUSER=", MyProcPort->user_name);
+			append2(&buf, &fields, FLAG_PGUSER, "PGUSER=",
+			        MyProcPort->user_name);
 
 		if (MyProcPort->database_name)
-			append2(&buf, &fields, "PGDATABASE=", MyProcPort->database_name);
+			append2(&buf, &fields, FLAG_PGDATABASE, "PGDATABASE=",
+			        MyProcPort->database_name);
 
 		if (MyProcPort->remote_host && MyProcPort->remote_port &&
 		    MyProcPort->remote_port[0] != '\0')
-			append4(&buf, &fields,
+			append4(&buf, &fields, FLAG_PGHOST,
 				"PGHOST=",
 				MyProcPort->remote_host,
 				":",
 				MyProcPort->remote_port
 			);
 		else if (MyProcPort->remote_host)
-			append2(&buf, &fields,
+			append2(&buf, &fields, FLAG_PGHOST,
 				"PGHOST=",
 				MyProcPort->remote_host
 			);
 	}
 
 	if (application_name && application_name[0] != '\0')
-		append2(&buf, &fields, "PGAPPNAME=", application_name);
+		append2(&buf, &fields, FLAG_PGAPPNAME, "PGAPPNAME=", application_name);
 
-	append2(&buf, &fields, "SYSLOG_IDENTIFIER=", syslog_ident);
+	append2(&buf, &fields, FLAG_NONE, "SYSLOG_IDENTIFIER=", syslog_ident);
+
+	/*
+	 * Find a suitable message id
+	 */
+	if (msgid == NULL) {
+		// TODO: sort entries in mkcatalog.py and replace linear search with bsearch
+		for (size_t i = 0; i < pgj_message_ids_count; ++i) {
+			const struct MessageId *msg = &pgj_message_ids[i];
+			if ((fields.flags & msg->flags) == msg->flags)
+				msgid = msg->id128;
+#ifdef DEBUG
+			if (fields.flags == msg->flags)
+				msgid2 = msg->id128;
+#endif
+		}
+	}
+
+#ifdef DEBUG
+	if (msgid != msgid2) {
+		ereport(
+			WARNING,
+			errmsg("pg_journal: message with %zu fields: msgid1 (%s) != msgid2 (%s)",
+			       fields.n, msgid, msgid2)
+		);
+	}
+#endif
+
+	Assert(msgid != NULL);
+	append2(&buf, &fields, FLAG_NONE, "MESSAGE_ID=", msgid);
 
 	/*
 	 * Done writing fields. Need to extract pointers to individual items, by
