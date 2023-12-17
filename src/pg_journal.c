@@ -31,8 +31,8 @@
 
 PG_MODULE_MAGIC;
 
-void _PG_init(void);
-void _PG_fini(void);
+void PGDLLEXPORT _PG_init(void);
+void PGDLLEXPORT _PG_fini(void);
 
 static void do_emit_log(ErrorData *edata);
 static void journal_emit_log(ErrorData *edata);
