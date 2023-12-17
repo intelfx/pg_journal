@@ -152,6 +152,12 @@ elevel_to_syslog(int elevel)
 	}
 }
 
+static int
+strprefixcmp(const char *str1, const char *prefix)
+{
+	return strncmp(str1, prefix, strlen(prefix));
+}
+
 /*
  * This is a slight abuse of the StringInfo system. We're simply concatenating
  * together lots of fields and storing their lengths. Once the whole string
@@ -233,7 +239,7 @@ journal_emit_log(ErrorData *edata)
 
 	/* Assign a MESSAGE_ID to log_statement logging */
 	if (edata->hide_stmt && debug_query_string != NULL &&
-	    memcmp(edata->message, "statement: ", 11) == 0) {
+	    !strprefixcmp(edata->message, "statement: ")) {
 		append_string(&buf, &fields[n++],
 			"MESSAGE_ID=",
 			"a63699368b304b4cb51bce5644736306"
