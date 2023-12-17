@@ -267,7 +267,7 @@ journal_emit_log(ErrorData *edata)
 	if (edata->internalquery)
 		append_string(&buf, &fields[n++], "QUERY=", edata->internalquery);
 
-	if (edata->context)
+	if (!edata->hide_ctx && edata->context)
 		append_string(&buf, &fields[n++], "CONTEXT=", edata->context);
 
 	if (!edata->hide_stmt && debug_query_string)
