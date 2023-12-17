@@ -76,6 +76,12 @@ DefineBoolVariable(const char *name, const char *short_desc, bool *value_addr)
 void
 _PG_init(void)
 {
+	ereport(
+		LOG,
+		errmsg("pg_journal: setting up"),
+		errhint("future log output will be sent to the journal")
+	);
+
 	DefineBoolVariable(
 		"pg_journal.passthrough_server_log",
 		"Duplicate messages to the server log even if journal logging succeeds",
@@ -93,17 +99,37 @@ _PG_init(void)
 
 	prev_emit_log_hook = emit_log_hook;
 	emit_log_hook = do_emit_log;
+
+	ereport(
+		LOG,
+		errmsg("pg_journal: ready")
+	);
 }
 
 void
 _PG_fini(void)
 {
-	if (emit_log_hook == do_emit_log)
-		emit_log_hook = prev_emit_log_hook;
 	/*
-	 * If not, someone else didn't clean up properly. Better not to mess with
-	 * it.
+	 * If not, someone else didn't clean up properly. We can't do anything here.
 	 */
+	if (emit_log_hook != do_emit_log)
+		ereport(
+			FATAL,
+			errmsg("pg_journal: emit_log_hook has been changed, cannot shut down")
+		);
+
+	ereport(
+		LOG,
+		errmsg("pg_journal: shutting down"),
+		errhint("future log output will be sent to the configured server log")
+	);
+
+	emit_log_hook = prev_emit_log_hook;
+
+	ereport(
+		LOG,
+		errmsg("pg_journal: shut down, resuming normal server log output")
+	);
 }
 
 static void
