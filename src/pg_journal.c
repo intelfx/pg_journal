@@ -221,7 +221,6 @@ static void
 journal_emit_log(ErrorData *edata)
 {
 	struct iovec fields[MAX_FIELDS];
-	MemoryContext oldcontext;
 	StringInfoData buf;
 	int ret;
 	int i;
@@ -230,9 +229,6 @@ journal_emit_log(ErrorData *edata)
 
 	if (!edata->output_to_server)
 		return;
-
-	/* We should already be in ErrorContext, but just make 100% sure */
-	oldcontext = MemoryContextSwitchTo(ErrorContext);
 
 	initStringInfo(&buf);
 
@@ -377,6 +373,4 @@ journal_emit_log(ErrorData *edata)
 			reported_failure = true;
 		}
 	}
-
-	MemoryContextSwitchTo(oldcontext);
 }
