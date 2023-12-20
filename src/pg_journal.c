@@ -48,6 +48,8 @@ static bool reported_failure = false;
 static bool passthrough_server_log = false;
 /* Cache syslog_ident */
 static char *syslog_ident = NULL;
+/* Whether we are doing anything */
+static bool g_initialized = false;
 
 /**** Implementation */
 
@@ -78,6 +80,23 @@ DefineBoolVariable(const char *name, const char *short_desc, bool *value_addr)
 void
 _PG_init(void)
 {
+	if (g_initialized) {
+		ereport(
+			FATAL,
+			errmsg("pg_journal: already initialized, bailing out")
+		);
+		return;
+	}
+
+	if (getenv("JOURNAL_STREAM") == NULL) {
+		ereport(
+			WARNING,
+			errmsg("pg_journal: not running under systemd, deactivating"),
+			errhint("$JOURNAL_STREAM environment variable is not set")
+		);
+		return;
+	}
+
 	ereport(
 		LOG,
 		errmsg("pg_journal: setting up"),
@@ -101,6 +120,7 @@ _PG_init(void)
 
 	prev_emit_log_hook = emit_log_hook;
 	emit_log_hook = do_emit_log;
+	g_initialized = true;
 
 	ereport(
 		LOG,
@@ -111,6 +131,10 @@ _PG_init(void)
 void
 _PG_fini(void)
 {
+	if (!g_initialized) {
+		return;
+	}
+
 	/*
 	 * If not, someone else didn't clean up properly. We can't do anything here.
 	 */
@@ -126,6 +150,7 @@ _PG_fini(void)
 		errhint("future log output will be sent to the configured server log")
 	);
 
+	g_initialized = false;
 	emit_log_hook = prev_emit_log_hook;
 
 	ereport(
@@ -138,6 +163,13 @@ static void
 do_emit_log(ErrorData *edata)
 {
 	static bool in_hook = false;
+
+	if (!g_initialized) {
+		ereport(
+			FATAL,
+			errmsg("pg_journal: emit_log_hook called while not initialized")
+		);
+	}
 
 	/* Call any previous hooks */
 	if (prev_emit_log_hook)
